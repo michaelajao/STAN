@@ -1,10 +1,17 @@
-# %% [markdown]
-# # COVID-19 Spread Prediction Using Graph Attention Networks and SIR Model Integration
-# 
-# This script models and predicts the spread of COVID-19 across U.S. states by integrating epidemiological modeling (SIR) with graph-based deep learning (Graph Attention Networks). It leverages GPU acceleration for efficient computation.
+"""
+COVID-19 Spread Prediction Using Graph Attention Networks and SIR Model Integration
 
-# %%
-# %% Import Necessary Libraries
+This script models and predicts the spread of COVID-19 across U.S. states by integrating
+epidemiological modeling (SIR) with graph-based deep learning (Graph Attention Networks).
+It leverages GPU acceleration for efficient computation.
+
+Author: Your Name
+Date: YYYY-MM-DD
+"""
+
+# =============================================================================
+# Import Necessary Libraries
+# =============================================================================
 import torch
 import os
 import csv
@@ -24,8 +31,9 @@ from tqdm import tqdm
 import logging
 from torch.utils.tensorboard import SummaryWriter
 
-# %%
-# %% Setup Logging and TensorBoard
+# =============================================================================
+# Setup Logging and TensorBoard
+# =============================================================================
 # Configure logging
 logging.basicConfig(
     filename='experiment.log',
@@ -38,24 +46,36 @@ logging.info('Experiment Started')
 # Initialize TensorBoard writer
 writer = SummaryWriter('runs/stan_experiment')
 
-# %%
-# %% Set Environment Variables
+# =============================================================================
+# Set Environment Variables
+# =============================================================================
 os.environ['NUMEXPR_MAX_THREADS'] = '16'
 os.environ['NUMEXPR_NUM_THREADS'] = '8'
 
-# %%
-# %% Check PyTorch and CUDA Versions
+# =============================================================================
+# Check PyTorch and CUDA Versions
+# =============================================================================
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA version: {torch.version.cuda}")
 
-# %%
-# %% Set Device
+# Check GPU availability and usage
+if torch.cuda.is_available():
+    print("CUDA is available. GPU will be used for computations.")
+    os.system('nvidia-smi')  # Displays GPU status
+else:
+    print("CUDA is not available. CPU will be used for computations.")
+logging.info(f"CUDA Available: {torch.cuda.is_available()}")
+
+# =============================================================================
+# Set Device
+# =============================================================================
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 logging.info(f"Using device: {device}")
 
-# %%
-# %% Set Random Seeds for Reproducibility
+# =============================================================================
+# Set Random Seeds for Reproducibility
+# =============================================================================
 def set_seed(seed=42):
     import random
     random.seed(seed)
@@ -65,9 +85,11 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 set_seed()
+logging.info('Set random seeds for reproducibility.')
 
-# %%
-# %% Download and Preprocess Data
+# =============================================================================
+# Download and Preprocess Data
+# =============================================================================
 # Download COVID-19 data
 GenerateTrainingData().download_jhu_data('2020-05-01', '2020-12-01')
 logging.info('Downloaded JHU COVID-19 data.')
@@ -90,8 +112,9 @@ logging.info('Aggregated population data.')
 raw_data = pd.merge(raw_data, pop_data, how='inner', left_on='state', right_on='state_name')
 logging.info('Merged COVID-19 data with population data.')
 
-# %%
-# %% Generate Location Similarity
+# =============================================================================
+# Generate Location Similarity
+# =============================================================================
 loc_list = list(raw_data['state'].unique())
 loc_dist_map = {}
 
@@ -108,16 +131,20 @@ for each_loc in loc_list:
 
 logging.info('Generated location similarity map.')
 
-# %%
-# %% Print Number of Unique Locations
+# =============================================================================
+# Verify edge_index indices
+# =============================================================================
+# Before generating adj_map, ensure that all loc_list elements are in the data
 num_locations = len(loc_list)
 print(f"Number of unique locations: {num_locations}")
 logging.info(f"Number of unique locations: {num_locations}")
 
-# %%
-# %% Generate Adjacency Map
+# =============================================================================
+# Generate Adjacency Map
+# =============================================================================
 dist_threshold = 18
 for each_loc in loc_dist_map:
+    # Sort locations based on similarity scores in descending order
     loc_dist_map[each_loc] = {k: v for k, v in sorted(loc_dist_map[each_loc].items(), key=lambda item: item[1], reverse=True)}
 
 adj_map = {}
@@ -133,26 +160,62 @@ for each_loc in loc_dist_map:
 
 logging.info('Generated adjacency map based on similarity threshold.')
 
-# %%
-# %% Create Edge Index for Graph
+# =============================================================================
+# Verify that all adjacency indices are valid
+# =============================================================================
+invalid_indices = []
+for each_loc in adj_map:
+    for each_loc2 in adj_map[each_loc]:
+        try:
+            idx = loc_list.index(each_loc2)
+            if idx >= num_locations:
+                invalid_indices.append((each_loc, each_loc2, idx))
+        except ValueError:
+            invalid_indices.append((each_loc, each_loc2, 'Not Found'))
+
+if invalid_indices:
+    print("Invalid indices found in adj_map:")
+    for loc, loc2, idx in invalid_indices:
+        print(f"{loc} -> {loc2}, Index: {idx}")
+    logging.error("Invalid indices found in adj_map.")
+    raise ValueError("Invalid indices found in adj_map. Please check your adjacency mapping.")
+else:
+    logging.info("All adjacency indices are valid.")
+
+# =============================================================================
+# Create Edge Index for Graph
+# =============================================================================
 rows = []
 cols = []
 for each_loc in adj_map:
     for each_loc2 in adj_map[each_loc]:
-        rows.append(loc_list.index(each_loc))
-        cols.append(loc_list.index(each_loc2))
+        src_idx = loc_list.index(each_loc)
+        dst_idx = loc_list.index(each_loc2)
+        rows.append(src_idx)
+        cols.append(dst_idx)
 
 edge_index = torch.tensor([rows, cols], dtype=torch.long)
 logging.info(f"Edge index created with {edge_index.size(1)} edges.")
 
-# %%
-# %% Create PyG Data Object and Move to Device
+# Verify edge_index min and max
+max_index = edge_index.max().item()
+min_index = edge_index.min().item()
+print(f"edge_index min: {min_index}, max: {max_index}, num_nodes: {num_locations}")
+logging.info(f"edge_index min: {min_index}, max: {max_index}, num_nodes: {num_locations}")
+if max_index >= num_locations or min_index < 0:
+    logging.error("edge_index contains invalid node indices.")
+    raise ValueError("edge_index contains invalid node indices.")
+
+# =============================================================================
+# Create PyG Data Object and Move to Device
+# =============================================================================
 g = Data(edge_index=edge_index, num_nodes=num_locations)
 g = g.to(device)
 logging.info('Created PyG Data object and moved to device.')
 
-# %%
-# %% Preprocess Features
+# =============================================================================
+# Preprocess Features
+# =============================================================================
 active_cases = []
 confirmed_cases = []
 new_cases = []
@@ -181,8 +244,9 @@ dS = np.concatenate((np.zeros((susceptible_cases.shape[0], 1), dtype=np.float32)
 
 logging.info('Preprocessed dynamic features (dI, dR, dS).')
 
-# %%
-# %% Build Normalizer
+# =============================================================================
+# Build Normalizer
+# =============================================================================
 normalizer = {'S': {}, 'I': {}, 'R': {}, 'dS': {}, 'dI': {}, 'dR': {}}
 
 for i, each_loc in enumerate(loc_list):
@@ -195,8 +259,9 @@ for i, each_loc in enumerate(loc_list):
 
 logging.info('Built normalizer for features.')
 
-# %%
-# %% Define Data Preparation Function
+# =============================================================================
+# Define Data Preparation Function
+# =============================================================================
 def prepare_data(data, sum_I, sum_R, history_window=5, pred_window=15, slide_step=5):
     """
     Prepares data using a sliding window approach.
@@ -220,7 +285,7 @@ def prepare_data(data, sum_I, sum_R, history_window=5, pred_window=15, slide_ste
     last_R = []
     concat_I = []
     concat_R = []
-    
+
     for i in range(0, timestep, slide_step):
         if i + history_window + pred_window > timestep:
             break
@@ -231,21 +296,22 @@ def prepare_data(data, sum_I, sum_R, history_window=5, pred_window=15, slide_ste
         last_R.append(sum_R[:, i + history_window - 1])
         y_I.append(data[:, i + history_window:i + history_window + pred_window, 0])
         y_R.append(data[:, i + history_window:i + history_window + pred_window, 1])
-    
-    x = np.array(x, dtype=np.float32).transpose((1, 0, 2))
-    last_I = np.array(last_I, dtype=np.float32).transpose((1, 0))
-    last_R = np.array(last_R, dtype=np.float32).transpose((1, 0))
-    concat_I = np.array(concat_I, dtype=np.float32).transpose((1, 0))
-    concat_R = np.array(concat_R, dtype=np.float32).transpose((1, 0))
-    y_I = np.array(y_I, dtype=np.float32).transpose((1, 0, 2))
-    y_R = np.array(y_R, dtype=np.float32).transpose((1, 0, 2))
-    
+
+    x = np.array(x, dtype=np.float32).transpose((1, 0, 2))  # [time, batch, features]
+    last_I = np.array(last_I, dtype=np.float32).transpose((1, 0))  # [batch, ]
+    last_R = np.array(last_R, dtype=np.float32).transpose((1, 0))  # [batch, ]
+    concat_I = np.array(concat_I, dtype=np.float32).transpose((1, 0))  # [batch, ]
+    concat_R = np.array(concat_R, dtype=np.float32).transpose((1, 0))  # [batch, ]
+    y_I = np.array(y_I, dtype=np.float32).transpose((1, 0, 2))  # [time, batch, pred_window]
+    y_R = np.array(y_R, dtype=np.float32).transpose((1, 0, 2))  # [time, batch, pred_window]
+
     return x, last_I, last_R, concat_I, concat_R, y_I, y_R
 
 logging.info('Defined data preparation function.')
 
-# %%
-# %% Split Data into Train, Validation, and Test Sets
+# =============================================================================
+# Split Data into Train, Validation, and Test Sets
+# =============================================================================
 valid_window = 25
 test_window = 25
 history_window = 6
@@ -256,7 +322,7 @@ normalize = True
 # Concatenate dynamic features
 dynamic_feat = np.concatenate((np.expand_dims(dI, axis=-1), 
                                np.expand_dims(dR, axis=-1), 
-                               np.expand_dims(dS, axis=-1)), axis=-1)
+                               np.expand_dims(dS, axis=-1)), axis=-1)  # [n_loc, timestep, 3]
 
 # Normalize dynamic features
 if normalize:
@@ -274,9 +340,9 @@ dR_mean = torch.tensor([normalizer['dR'][loc][0] for loc in loc_list], dtype=tor
 dR_std = torch.tensor([normalizer['dR'][loc][1] for loc in loc_list], dtype=torch.float32)
 
 # Split data
-train_feat = dynamic_feat[:, :-valid_window - test_window, :]
-val_feat = dynamic_feat[:, -valid_window - test_window:-test_window, :]
-test_feat = dynamic_feat[:, -test_window:, :]
+train_feat = dynamic_feat[:, :-valid_window - test_window, :]  # [n_loc, train_timestep, 3]
+val_feat = dynamic_feat[:, -valid_window - test_window:-test_window, :]  # [n_loc, val_timestep, 3]
+test_feat = dynamic_feat[:, -test_window:, :]  # [n_loc, test_timestep, 3]
 
 train_x, train_I, train_R, train_cI, train_cR, train_yI, train_yR = prepare_data(
     train_feat, active_cases[:, :-valid_window - test_window], recovered_cases[:, :-valid_window - test_window],
@@ -296,13 +362,32 @@ test_x, test_I, test_R, test_cI, test_cR, test_yI, test_yR = prepare_data(
 
 logging.info('Prepared training, validation, and test datasets.')
 
-# %%
-# %% Build STAN Model
-in_dim = 3 * history_window
+# =============================================================================
+# Verify Data Shapes
+# =============================================================================
+print(f"train_x shape: {train_x.shape}")        # Expected: [time, batch, features]
+print(f"train_cI shape: {train_cI.shape}")      # Expected: [batch, ]
+print(f"train_cR shape: {train_cR.shape}")      # Expected: [batch, ]
+print(f"train_I shape: {train_I.shape}")        # Expected: [batch, 1]
+print(f"train_R shape: {train_R.shape}")        # Expected: [batch, 1]
+print(f"N shape: {static_feat[:, 0].shape}")    # Expected: [batch, ]
+
+logging.info(f"train_x shape: {train_x.shape}")
+logging.info(f"train_cI shape: {train_cI.shape}")
+logging.info(f"train_cR shape: {train_cR.shape}")
+logging.info(f"train_I shape: {train_I.shape}")
+logging.info(f"train_R shape: {train_R.shape}")
+logging.info(f"N shape: {static_feat[:, 0].shape}")
+
+# =============================================================================
+# Build STAN Model
+# =============================================================================
+in_dim = 3 * history_window  # Example: 3 features per history step
 hidden_dim1 = 32
 hidden_dim2 = 32
 gru_dim = 32
 num_heads = 1
+pred_window = 15
 
 model = STAN(g, in_dim, hidden_dim1, hidden_dim2, gru_dim, num_heads, pred_window, device).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
@@ -310,27 +395,28 @@ criterion = nn.MSELoss()
 
 logging.info('Initialized STAN model, optimizer, and loss function.')
 
-# %%
-# %% Convert Data to Tensors and Move to Device
-train_x = torch.tensor(train_x).to(device)
-train_I = torch.tensor(train_I).to(device)
-train_R = torch.tensor(train_R).to(device)
-train_cI = torch.tensor(train_cI).to(device)
-train_cR = torch.tensor(train_cR).to(device)
-train_yI = torch.tensor(train_yI).to(device)
-train_yR = torch.tensor(train_yR).to(device)
+# =============================================================================
+# Convert Data to Tensors and Move to Device
+# =============================================================================
+train_x = torch.tensor(train_x).to(device)  # [time, batch, features]
+train_I = torch.tensor(train_I).to(device).unsqueeze(1)  # [batch, 1]
+train_R = torch.tensor(train_R).to(device).unsqueeze(1)  # [batch, 1]
+train_cI = torch.tensor(train_cI).to(device)  # [batch, ]
+train_cR = torch.tensor(train_cR).to(device)  # [batch, ]
+train_yI = torch.tensor(train_yI).to(device)  # [time, batch, pred_window]
+train_yR = torch.tensor(train_yR).to(device)  # [time, batch, pred_window]
 
 val_x = torch.tensor(val_x).to(device)
-val_I = torch.tensor(val_I).to(device)
-val_R = torch.tensor(val_R).to(device)
+val_I = torch.tensor(val_I).to(device).unsqueeze(1)
+val_R = torch.tensor(val_R).to(device).unsqueeze(1)
 val_cI = torch.tensor(val_cI).to(device)
 val_cR = torch.tensor(val_cR).to(device)
 val_yI = torch.tensor(val_yI).to(device)
 val_yR = torch.tensor(val_yR).to(device)
 
 test_x = torch.tensor(test_x).to(device)
-test_I = torch.tensor(test_I).to(device)
-test_R = torch.tensor(test_R).to(device)
+test_I = torch.tensor(test_I).to(device).unsqueeze(1)
+test_R = torch.tensor(test_R).to(device).unsqueeze(1)
 test_cI = torch.tensor(test_cI).to(device)
 test_cR = torch.tensor(test_cR).to(device)
 test_yI = torch.tensor(test_yI).to(device)
@@ -341,12 +427,13 @@ dI_std = dI_std.to(device).reshape((dI_std.shape[0], 1, 1))
 dR_mean = dR_mean.to(device).reshape((dR_mean.shape[0], 1, 1))
 dR_std = dR_std.to(device).reshape((dR_std.shape[0], 1, 1))
 
-N = torch.tensor(static_feat[:, 0], dtype=torch.float32).to(device).unsqueeze(-1)
+N = torch.tensor(static_feat[:, 0], dtype=torch.float32).to(device).unsqueeze(-1)  # [batch, 1]
 
 logging.info('Converted all data to tensors and moved to device.')
 
-# %%
-# %% Train STAN Model with Enhanced Features
+# =============================================================================
+# Train STAN Model with Enhanced Features
+# =============================================================================
 # Initialize Training Parameters
 all_loss = []
 val_loss_history = []
@@ -360,17 +447,20 @@ max_epochs = 100  # Adjust as needed
 # Early Stopping and Learning Rate Scheduler
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
 
-# Optionally, train on all states instead of a single state
-# Here, we'll modify the training to handle all states
+logging.info('Starting training loop.')
 
-for epoch in tqdm(range(max_epochs), desc="Training Epochs"):
+for epoch_num in tqdm(range(max_epochs), desc="Training Epochs"):
     model.train()
     optimizer.zero_grad()
     
-    # Forward Pass
-    active_pred, recovered_pred, phy_active, phy_recover, h = model(
-        train_x, train_cI, train_cR, N, train_I, train_R
-    )
+    try:
+        # Forward Pass
+        active_pred, recovered_pred, phy_active, phy_recover, h = model(
+            train_x, train_cI, train_cR, N, train_I, train_R
+        )
+    except Exception as e:
+        logging.error("Error during forward pass.", exc_info=True)
+        raise e
     
     # Normalize SIR-based predictions if applicable
     if normalize:
@@ -390,38 +480,42 @@ for epoch in tqdm(range(max_epochs), desc="Training Epochs"):
     optimizer.step()
     
     all_loss.append(loss.item())
-    writer.add_scalar('Loss/Train', loss.item(), epoch)
+    writer.add_scalar('Loss/Train', loss.item(), epoch_num)
     
     # Validation
     model.eval()
     with torch.no_grad():
-        val_active_pred, val_recovered_pred, val_phy_active, val_phy_recover, _ = model(
-            val_x, val_cI, val_cR, N, val_I, val_R, h
-        )
-        if normalize:
-            val_phy_active = (val_phy_active - dI_mean) / dI_std
-            val_phy_recover = (val_phy_recover - dR_mean) / dR_std
-        
-        val_loss = (
-            criterion(val_active_pred, val_yI) +
-            scale * criterion(val_phy_active, val_yI) +
-            criterion(val_recovered_pred, val_yR) +
-            scale * criterion(val_phy_recover, val_yR)
-        )
+        try:
+            val_active_pred, val_recovered_pred, val_phy_active, val_phy_recover, _ = model(
+                val_x, val_cI, val_cR, N, val_I, val_R, h
+            )
+            if normalize:
+                val_phy_active = (val_phy_active - dI_mean) / dI_std
+                val_phy_recover = (val_phy_recover - dR_mean) / dR_std
+            
+            val_loss = (
+                criterion(val_active_pred, val_yI) +
+                criterion(val_recovered_pred, val_yR) +
+                scale * criterion(val_phy_active, val_yI) +
+                scale * criterion(val_phy_recover, val_yR)
+            )
+        except Exception as e:
+            logging.error("Error during validation forward pass.", exc_info=True)
+            raise e
     
     val_loss_history.append(val_loss.item())
-    writer.add_scalar('Loss/Validation', val_loss.item(), epoch)
+    writer.add_scalar('Loss/Validation', val_loss.item(), epoch_num)
     
     # Logging
-    logging.info(f"Epoch {epoch+1}/{max_epochs}, Training Loss: {loss.item():.4f}, Validation Loss: {val_loss.item():.4f}")
+    logging.info(f"Epoch {epoch_num+1}/{max_epochs}, Training Loss: {loss.item():.4f}, Validation Loss: {val_loss.item():.4f}")
     
     # Update Progress Bar Description
-    tqdm.write(f"Epoch {epoch+1}/{max_epochs}, Training Loss: {loss.item():.4f}, Validation Loss: {val_loss.item():.4f}")
+    tqdm.write(f"Epoch {epoch_num+1}/{max_epochs}, Training Loss: {loss.item():.4f}, Validation Loss: {val_loss.item():.4f}")
     
     # Check for Improvement
     if val_loss.item() < min_val_loss:
         torch.save({
-            'epoch': epoch + 1,
+            'epoch': epoch_num + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': loss.item(),
@@ -439,10 +533,11 @@ for epoch in tqdm(range(max_epochs), desc="Training Epochs"):
     # Step the scheduler
     scheduler.step(val_loss)
 
-writer.close()
+logging.info('Training loop completed.')
 
-# %%
-# %% Load Best Model and Evaluate on Test Set
+# =============================================================================
+# Load Best Model and Evaluate on Test Set
+# =============================================================================
 # Load the best model
 checkpoint = torch.load(file_name)
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -452,18 +547,25 @@ logging.info('Loaded best model for evaluation.')
 
 # Forward Pass on Test Data
 with torch.no_grad():
-    test_active_pred, test_recovered_pred, test_phy_active, test_phy_recover, _ = model(
-        test_x, test_cI, test_cR, N, test_I, test_R
-    )
-    if normalize:
-        test_phy_active = (test_phy_active * dI_std + dI_mean)
-        test_phy_recover = (test_phy_recover * dR_std + dR_mean)
-    else:
-        test_phy_active = test_phy_active
-        test_phy_recover = test_phy_recover
+    try:
+        test_active_pred, test_recovered_pred, test_phy_active, test_phy_recover, _ = model(
+            test_x, test_cI, test_cR, N, test_I, test_R
+        )
+        if normalize:
+            test_phy_active = (test_phy_active * dI_std + dI_mean)
+            test_phy_recover = (test_phy_recover * dR_std + dR_mean)
+        else:
+            test_phy_active = test_phy_active
+            test_phy_recover = test_phy_recover
+    except Exception as e:
+        logging.error("Error during test forward pass.", exc_info=True)
+        raise e
 
-# %%
-# %% Denormalize Predictions (if applicable)
+logging.info('Performed forward pass on test data.')
+
+# =============================================================================
+# Denormalize Predictions (if applicable)
+# =============================================================================
 if normalize:
     test_active_pred = test_active_pred * dI_std + dI_mean
     test_recovered_pred = test_recovered_pred * dR_std + dR_mean
@@ -472,8 +574,9 @@ if normalize:
 
 logging.info('Denormalized test predictions.')
 
-# %%
-# %% Define Function to Get Real Y Values
+# =============================================================================
+# Define Function to Get Real Y Values
+# =============================================================================
 def get_real_y(data, history_window=5, pred_window=15, slide_step=5):
     """
     Extracts the true values corresponding to the prediction window.
@@ -493,16 +596,20 @@ def get_real_y(data, history_window=5, pred_window=15, slide_step=5):
         if i + history_window + pred_window > timestep:
             break
         y.append(data[:, i + history_window:i + history_window + pred_window])
-    y = np.array(y, dtype=np.float32).transpose((1, 0, 2))
+    y = np.array(y, dtype=np.float32).transpose((1, 0, 2))  # [time, batch, pred_window]
     return y
 
-# %%
-# %% Get Real Y Values for Test Set
+logging.info('Defined function to extract real Y values.')
+
+# =============================================================================
+# Get Real Y Values for Test Set
+# =============================================================================
 I_true = get_real_y(active_cases, history_window, pred_window, slide_step)
 logging.info('Extracted real Y values for test set.')
 
-# %%
-# %% Plot Training and Validation Loss Curves
+# =============================================================================
+# Plot Training and Validation Loss Curves
+# =============================================================================
 plt.figure(figsize=(10, 5))
 plt.plot(all_loss, label='Training Loss')
 plt.plot(val_loss_history, label='Validation Loss')
@@ -514,11 +621,15 @@ plt.grid(True)
 plt.show()
 logging.info('Plotted training and validation loss curves.')
 
-# %%
-# %% Plot Predictions vs. Ground Truth for Selected States
+# =============================================================================
+# Plot Predictions vs. Ground Truth for Selected States
+# =============================================================================
 states_to_plot = ['California', 'New York', 'Texas']  # Add more states as needed
 
 for state in states_to_plot:
+    if state not in loc_list:
+        logging.warning(f"State {state} not found in loc_list.")
+        continue
     loc = loc_list.index(state)
     plt.figure(figsize=(10, 5))
     plt.plot(I_true[loc, -1, :], c='r', label='Ground Truth')
@@ -531,8 +642,9 @@ for state in states_to_plot:
     plt.show()
     logging.info(f'Plotted predictions for {state}.')
 
-# %%
-# %% Calculate and Print Evaluation Metrics
+# =============================================================================
+# Calculate and Print Evaluation Metrics
+# =============================================================================
 def calculate_metrics(y_true, y_pred):
     """
     Calculates evaluation metrics between true and predicted values.
@@ -563,8 +675,9 @@ for metric, value in metrics.items():
     print(f"{metric}: {value:.4f}")
     logging.info(f"{metric} for California: {value:.4f}")
 
-# %%
-# %% Residual Analysis for California
+# =============================================================================
+# Residual Analysis for California
+# =============================================================================
 residuals = y_true - y_pred
 plt.figure(figsize=(10, 5))
 plt.hist(residuals, bins=50, color='purple', edgecolor='black')
@@ -575,23 +688,24 @@ plt.grid(True)
 plt.show()
 logging.info('Performed residual analysis for California.')
 
-# %%
-# %% Save Final Model
+# =============================================================================
+# Save Final Model
+# =============================================================================
 torch.save({
-    'epoch': epoch + 1,
+    'epoch': epoch_num + 1,
     'model_state_dict': model.state_dict(),
     'optimizer_state_dict': optimizer.state_dict(),
     'loss': loss.item(),
 }, './save/stan_final.pth')
 logging.info('Saved final model.')
 
-# %%
-# %% Close TensorBoard Writer
+# =============================================================================
+# Close TensorBoard Writer
+# =============================================================================
 writer.close()
 logging.info('Closed TensorBoard writer.')
 
-# %%
-# %% End of Experiment Logging
+# =============================================================================
+# End of Experiment Logging
+# =============================================================================
 logging.info('Experiment Completed Successfully.')
-
-# %%
